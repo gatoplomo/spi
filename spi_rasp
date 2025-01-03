@@ -1,79 +1,56 @@
-import pigpio
+import spidev
 import time
 
-# Configuración de pines SPI
-MOSI_PIN = 10  # GPIO10 - Recibe datos desde el STM32
-MISO_PIN = 9   # GPIO9 - Envía datos hacia el STM32
-SCLK_PIN = 11  # GPIO11 - Reloj SPI
-CE_PIN = 8     # GPIO8 - Selección de esclavo (CE0)
+# Configuración del SPI en la Raspberry Pi
+SPI_BUS = 0     # SPI0
+SPI_DEVICE = 0  # CE0 (Chip Enable 0)
+SPI_SPEED_HZ = 4000000  # 1 MHz (puedes ajustarlo según el STM32)
 
-# Mensaje inicial que se enviará al STM32
-INIT_MESSAGE = [0x55, 0xAA]  # Ejemplo: Secuencia de 2 bytes (puedes cambiarlo)
+def initialize_spi():
+    """Inicializa la conexión SPI"""
+    spi = spidev.SpiDev()
+    spi.open(SPI_BUS, SPI_DEVICE)
+    spi.max_speed_hz = SPI_SPEED_HZ
+    spi.mode = 0  # CPOL=0, CPHA=0 (Motorola, primer flanco)
+    spi.bits_per_word = 8  # Tamaño de palabra: 8 bits
+    return spi
 
-def send_message(pi, message):
-    """
-    Envía un mensaje al maestro (STM32) utilizando el pin MISO.
-    """
-    for byte in message:
-        for bit in range(8):
-            bit_value = (byte >> (7 - bit)) & 1  # Extraer cada bit del byte
-            pi.write(MISO_PIN, bit_value)  # Enviar bit por el pin MISO
-            time.sleep(0.00001)  # Pequeño retardo para sincronizar
-    print(f"Mensaje enviado: {message}")
+def send_start_message(spi):
+    """Envía un mensaje al STM32 para indicarle que envíe datos."""
+    start_message = 0xA5  # Mensaje de inicio (puedes cambiarlo)
+    print(f"Enviando mensaje de inicio: 0x{start_message:02X}")
+    spi.xfer2([start_message])  # Envía el mensaje al STM32
+    time.sleep(0.01)  # Pequeño retardo para permitir respuesta del STM32
 
-def spi_callback(gpio, level, tick):
-    """
-    Callback que se ejecuta en cada cambio del reloj SPI.
-    Recibe datos enviados por el maestro a través de MOSI.
-    """
-    global data_buffer
-    if level == 0:  # Nivel bajo indica un bit recibido
-        bit = pi.read(MOSI_PIN)
-        data_buffer.append(bit)
-        print(f"Bit recibido: {bit}")
+def process_byte(byte_received):
+    """Procesa cada byte recibido desde el STM32."""
+    print(f"Byte recibido: 0x{byte_received:02X}")
+    # Aquí puedes añadir lógica para manejar los datos recibidos.
 
 def main():
-    global data_buffer
-    data_buffer = []  # Buffer para almacenar bits recibidos
-
-    # Crear instancia de pigpio
-    pi = pigpio.pi()
-    if not pi.connected:
-        print("Error: No se pudo conectar a pigpio daemon.")
-        return
+    # Inicializar SPI
+    spi = initialize_spi()
+    print("Conexión SPI inicializada.")
 
     try:
-        # Configurar los pines SPI
-        pi.set_mode(MOSI_PIN, pigpio.INPUT)
-        pi.set_mode(MISO_PIN, pigpio.OUTPUT)
-        pi.set_mode(SCLK_PIN, pigpio.INPUT)
-        pi.set_mode(CE_PIN, pigpio.INPUT)
-
-        # Configurar callback para recibir datos en MOSI
-        pi.callback(SCLK_PIN, pigpio.FALLING_EDGE, spi_callback)
-
-        # Esperar activación del esclavo
-        print("Esperando activación desde STM32 (línea CE)...")
-        while pi.read(CE_PIN) == 1:
-            time.sleep(0.01)  # Esperar hasta que el maestro seleccione el esclavo
-
-        print("Línea CE activa. Enviando mensaje al STM32...")
-        send_message(pi, INIT_MESSAGE)  # Enviar mensaje inicial
-
-        print("Esperando datos desde el STM32...")
         while True:
-            if len(data_buffer) >= 8:  # Suponiendo recepción de un byte completo (8 bits)
-                # Convertir los bits recibidos en un byte
-                received_byte = 0
-                for i, bit in enumerate(data_buffer[:8]):
-                    received_byte |= (bit << (7 - i))
-                data_buffer = data_buffer[8:]  # Eliminar los bits procesados
+            # Enviar mensaje de inicio al STM32
+            send_start_message(spi)
 
-                print(f"Byte recibido: 0x{received_byte:02X}")
+            # Recibir un byte de respuesta del STM32
+            byte_to_send = 0x00  # Envía un byte nulo para recibir un dato
+            byte_received = spi.xfer2([byte_to_send])[0]
+
+            # Procesar el byte recibido
+            process_byte(byte_received)
+
+            # Pausar (ajusta el intervalo según la aplicación)
+            time.sleep(0.1)
+
     except KeyboardInterrupt:
-        print("\nFinalizando...")
+        print("\nFinalizando comunicación SPI.")
     finally:
-        pi.stop()
+        spi.close()
 
 if __name__ == "__main__":
     main()
