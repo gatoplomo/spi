@@ -1,0 +1,79 @@
+import pigpio
+import time
+
+# Configuración de pines SPI
+MOSI_PIN = 10  # GPIO10 - Recibe datos desde el STM32
+MISO_PIN = 9   # GPIO9 - Envía datos hacia el STM32
+SCLK_PIN = 11  # GPIO11 - Reloj SPI
+CE_PIN = 8     # GPIO8 - Selección de esclavo (CE0)
+
+# Mensaje inicial que se enviará al STM32
+INIT_MESSAGE = [0x55, 0xAA]  # Ejemplo: Secuencia de 2 bytes (puedes cambiarlo)
+
+def send_message(pi, message):
+    """
+    Envía un mensaje al maestro (STM32) utilizando el pin MISO.
+    """
+    for byte in message:
+        for bit in range(8):
+            bit_value = (byte >> (7 - bit)) & 1  # Extraer cada bit del byte
+            pi.write(MISO_PIN, bit_value)  # Enviar bit por el pin MISO
+            time.sleep(0.00001)  # Pequeño retardo para sincronizar
+    print(f"Mensaje enviado: {message}")
+
+def spi_callback(gpio, level, tick):
+    """
+    Callback que se ejecuta en cada cambio del reloj SPI.
+    Recibe datos enviados por el maestro a través de MOSI.
+    """
+    global data_buffer
+    if level == 0:  # Nivel bajo indica un bit recibido
+        bit = pi.read(MOSI_PIN)
+        data_buffer.append(bit)
+        print(f"Bit recibido: {bit}")
+
+def main():
+    global data_buffer
+    data_buffer = []  # Buffer para almacenar bits recibidos
+
+    # Crear instancia de pigpio
+    pi = pigpio.pi()
+    if not pi.connected:
+        print("Error: No se pudo conectar a pigpio daemon.")
+        return
+
+    try:
+        # Configurar los pines SPI
+        pi.set_mode(MOSI_PIN, pigpio.INPUT)
+        pi.set_mode(MISO_PIN, pigpio.OUTPUT)
+        pi.set_mode(SCLK_PIN, pigpio.INPUT)
+        pi.set_mode(CE_PIN, pigpio.INPUT)
+
+        # Configurar callback para recibir datos en MOSI
+        pi.callback(SCLK_PIN, pigpio.FALLING_EDGE, spi_callback)
+
+        # Esperar activación del esclavo
+        print("Esperando activación desde STM32 (línea CE)...")
+        while pi.read(CE_PIN) == 1:
+            time.sleep(0.01)  # Esperar hasta que el maestro seleccione el esclavo
+
+        print("Línea CE activa. Enviando mensaje al STM32...")
+        send_message(pi, INIT_MESSAGE)  # Enviar mensaje inicial
+
+        print("Esperando datos desde el STM32...")
+        while True:
+            if len(data_buffer) >= 8:  # Suponiendo recepción de un byte completo (8 bits)
+                # Convertir los bits recibidos en un byte
+                received_byte = 0
+                for i, bit in enumerate(data_buffer[:8]):
+                    received_byte |= (bit << (7 - i))
+                data_buffer = data_buffer[8:]  # Eliminar los bits procesados
+
+                print(f"Byte recibido: 0x{received_byte:02X}")
+    except KeyboardInterrupt:
+        print("\nFinalizando...")
+    finally:
+        pi.stop()
+
+if __name__ == "__main__":
+    main()
